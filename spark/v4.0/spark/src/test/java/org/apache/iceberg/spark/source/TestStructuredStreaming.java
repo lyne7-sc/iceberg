@@ -38,6 +38,7 @@ import org.apache.iceberg.hadoop.HadoopTables;
 import org.apache.iceberg.io.CloseableIterable;
 import org.apache.iceberg.relocated.com.google.common.collect.ImmutableMap;
 import org.apache.iceberg.relocated.com.google.common.collect.Lists;
+import org.apache.iceberg.spark.SparkReadOptions;
 import org.apache.iceberg.spark.TestBase;
 import org.apache.iceberg.types.Types;
 import org.apache.spark.sql.Dataset;
@@ -140,6 +141,73 @@ public class TestStructuredStreaming {
 
       assertThat(actual).hasSameSizeAs(expected).isEqualTo(expected);
       assertThat(table.snapshots()).as("Number of snapshots should match").hasSize(2);
+    } finally {
+      for (StreamingQuery query : spark.streams().active()) {
+        query.stop();
+      }
+    }
+  }
+
+  @Test
+  public void streamingWriteAppendToBranchIsIdempotent() throws Exception {
+    File parent = temp.resolve("parquet").toFile();
+    File location = new File(parent, "test-table");
+    File checkpoint = new File(parent, "checkpoint");
+
+    HadoopTables tables = new HadoopTables(CONF);
+    Table table = tables.create(SCHEMA, PartitionSpec.unpartitioned(), location.toString());
+    table.manageSnapshots().createBranch("test").commit();
+    assertThat(table.currentSnapshot()).isNull();
+
+    List<SimpleRecord> expected =
+        Lists.newArrayList(
+            new SimpleRecord(1, "1"),
+            new SimpleRecord(2, "2"),
+            new SimpleRecord(3, "3"),
+            new SimpleRecord(4, "4"));
+
+    MemoryStream<Integer> inputStream = newMemoryStream(1, spark.sqlContext(), Encoders.INT());
+    DataStreamWriter<Row> streamWriter =
+        inputStream
+            .toDF()
+            .selectExpr("value AS id", "CAST (value AS STRING) AS data")
+            .writeStream()
+            .outputMode("append")
+            .format("iceberg")
+            .option("checkpointLocation", checkpoint.toString())
+            .option("path", location + "#branch_test");
+
+    try {
+      StreamingQuery query = streamWriter.start();
+      send(Lists.newArrayList(1, 2), inputStream);
+      query.processAllAvailable();
+      send(Lists.newArrayList(3, 4), inputStream);
+      query.processAllAvailable();
+      query.stop();
+
+      table.refresh();
+      int snapshotCountBeforeReplay = Lists.newArrayList(table.snapshots()).size();
+
+      File lastCommitFile = new File(checkpoint + "/commits/1");
+      assertThat(lastCommitFile.delete()).as("The commit file must be deleted").isTrue();
+      Files.deleteIfExists(Paths.get(checkpoint + "/commits/.1.crc"));
+
+      StreamingQuery restartedQuery = streamWriter.start();
+      restartedQuery.processAllAvailable();
+
+      Dataset<Row> result =
+          spark
+              .read()
+              .format("iceberg")
+              .option(SparkReadOptions.BRANCH, "test")
+              .load(location.toString());
+      List<SimpleRecord> actual =
+          result.orderBy("id").as(Encoders.bean(SimpleRecord.class)).collectAsList();
+
+      assertThat(actual).hasSameSizeAs(expected).isEqualTo(expected);
+      table.refresh();
+      assertThat(table.snapshots()).hasSize(snapshotCountBeforeReplay);
+      assertThat(table.currentSnapshot()).isNull();
     } finally {
       for (StreamingQuery query : spark.streams().active()) {
         query.stop();

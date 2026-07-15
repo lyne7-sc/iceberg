@@ -60,6 +60,7 @@ import org.apache.iceberg.spark.SparkWriteRequirements;
 import org.apache.iceberg.util.ContentFileUtil;
 import org.apache.iceberg.util.DataFileSet;
 import org.apache.iceberg.util.DeleteFileSet;
+import org.apache.iceberg.util.SnapshotUtil;
 import org.apache.spark.TaskContext;
 import org.apache.spark.TaskContext$;
 import org.apache.spark.api.java.JavaSparkContext;
@@ -564,7 +565,7 @@ abstract class SparkWrite implements Write, RequiresDistributionAndOrdering {
     }
 
     private Long findLastCommittedEpochId() {
-      Snapshot snapshot = table.currentSnapshot();
+      Snapshot snapshot = SnapshotUtil.latestSnapshot(table, branch);
       Long lastCommittedEpochId = null;
       while (snapshot != null) {
         Map<String, String> summary = snapshot.summary();
