@@ -30,6 +30,7 @@ import java.time.Instant;
 import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
 import java.util.Collections;
+import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -76,6 +77,7 @@ import org.apache.iceberg.exceptions.NoSuchViewException;
 import org.apache.iceberg.io.CloseableIterable;
 import org.apache.iceberg.relocated.com.google.common.annotations.VisibleForTesting;
 import org.apache.iceberg.relocated.com.google.common.base.Preconditions;
+import org.apache.iceberg.relocated.com.google.common.collect.AbstractIterator;
 import org.apache.iceberg.relocated.com.google.common.collect.Iterables;
 import org.apache.iceberg.relocated.com.google.common.collect.Maps;
 import org.apache.iceberg.relocated.com.google.common.collect.Sets;
@@ -999,19 +1001,17 @@ public class CatalogHandlers {
       Long minRowsRequested) {
     try (CloseableIterable<FileScanTask> planTasks = scan.planFiles()) {
       String planTaskPrefix = planId + "-" + tableId + "-";
+      Iterable<FileScanTask> limitedTasks =
+          null != minRowsRequested ? limitTasksByRows(planTasks, minRowsRequested) : planTasks;
 
-      // Handle empty table scans
-      if (!planTasks.iterator().hasNext()) {
+      // Handle empty task prefixes
+      if (!limitedTasks.iterator().hasNext()) {
         String planTaskKey = planTaskPrefix + "0";
         // Add empty scan to planning state so async calls know the scan completed
         IN_MEMORY_PLANNING_STATE.addPlanTask(planTaskKey, Collections.emptyList());
         return Pair.of(Collections.emptyList(), planTaskKey);
       }
 
-      Iterable<FileScanTask> limitedTasks =
-          null != minRowsRequested
-              ? Iterables.limit(planTasks, (int) Math.min(minRowsRequested, Integer.MAX_VALUE))
-              : planTasks;
       Iterable<List<FileScanTask>> taskGroupings =
           Iterables.partition(limitedTasks, tasksPerPlanTask);
       int planTaskSequence = 0;
@@ -1034,6 +1034,27 @@ public class CatalogHandlers {
     } catch (IOException e) {
       throw new UncheckedIOException(e);
     }
+  }
+
+  private static Iterable<FileScanTask> limitTasksByRows(
+      Iterable<FileScanTask> tasks, long minRowsRequested) {
+    return () ->
+        new AbstractIterator<FileScanTask>() {
+          private final Iterator<FileScanTask> taskIterator = tasks.iterator();
+          private long rowsRemaining = minRowsRequested;
+
+          @Override
+          protected FileScanTask computeNext() {
+            if (rowsRemaining <= 0L || !taskIterator.hasNext()) {
+              return endOfData();
+            }
+
+            FileScanTask task = taskIterator.next();
+            long estimatedRows = Math.max(0L, task.estimatedRowsCount());
+            rowsRemaining -= Math.min(rowsRemaining, estimatedRows);
+            return task;
+          }
+        };
   }
 
   @SuppressWarnings("FutureReturnValueIgnored")

@@ -651,14 +651,37 @@ public class TestRESTScanPlanning extends TestBaseWithRESTServer {
   @EnumSource(PlanningMode.class)
   void scanPlanningWithMinRowsRequested(
       Function<TestPlanningBehavior.Builder, TestPlanningBehavior.Builder> planMode) {
-    configurePlanningBehavior(planMode);
-    Table table = restTableFor(restCatalog, "min_rows_requested_table");
-    table.newAppend().appendFile(FILE_B).appendFile(FILE_C).commit();
+    configurePlanningBehavior(builder -> planMode.apply(builder).tasksPerPage(1));
+    Table table = createTableWithScanPlanning(restCatalog, "min_rows_requested_table");
+    DataFile fileA =
+        DataFiles.builder(SPEC)
+            .withPath("/path/to/min-rows-a.parquet")
+            .withFileSizeInBytes(10)
+            .withPartitionPath("data_bucket=0")
+            .withRecordCount(10)
+            .build();
+    DataFile fileB =
+        DataFiles.builder(SPEC)
+            .withPath("/path/to/min-rows-b.parquet")
+            .withFileSizeInBytes(10)
+            .withPartitionPath("data_bucket=1")
+            .withRecordCount(10)
+            .build();
+    DataFile fileC =
+        DataFiles.builder(SPEC)
+            .withPath("/path/to/min-rows-c.parquet")
+            .withFileSizeInBytes(10)
+            .withPartitionPath("data_bucket=2")
+            .withRecordCount(10)
+            .build();
+    table.newAppend().appendFile(fileA).appendFile(fileB).appendFile(fileC).commit();
     setParserContext(table);
+
+    assertThat(table.newScan().minRowsRequested(0L).planFiles()).isEmpty();
 
     ArgumentCaptor<HTTPRequest> requestCaptor = ArgumentCaptor.forClass(HTTPRequest.class);
 
-    assertThat(table.newScan().minRowsRequested(1L).planFiles()).hasSize(1);
+    assertThat(table.newScan().minRowsRequested(5L).planFiles()).hasSize(1);
     Mockito.verify(adapterForRESTServer, Mockito.atLeastOnce())
         .execute(requestCaptor.capture(), any(), any(), any(), any());
     assertThat(
@@ -668,19 +691,21 @@ public class TestRESTScanPlanning extends TestBaseWithRESTServer {
                 .reduce((first, second) -> second)
                 .get()
                 .minRowsRequested())
-        .isEqualTo(1L);
+        .isEqualTo(5L);
+
+    assertThat(table.newScan().minRowsRequested(15L).planFiles()).hasSize(2);
+    Mockito.verify(adapterForRESTServer, Mockito.atLeastOnce())
+        .execute(requestCaptor.capture(), any(), any(), any(), any());
+    assertThat(
+            requestCaptor.getAllValues().stream()
+                .filter(req -> req.body() instanceof PlanTableScanRequest)
+                .map(req -> (PlanTableScanRequest) req.body())
+                .reduce((first, second) -> second)
+                .get()
+                .minRowsRequested())
+        .isEqualTo(15L);
 
     assertThat(table.newScan().minRowsRequested(100L).planFiles()).hasSize(3);
-    Mockito.verify(adapterForRESTServer, Mockito.atLeastOnce())
-        .execute(requestCaptor.capture(), any(), any(), any(), any());
-    assertThat(
-            requestCaptor.getAllValues().stream()
-                .filter(req -> req.body() instanceof PlanTableScanRequest)
-                .map(req -> (PlanTableScanRequest) req.body())
-                .reduce((first, second) -> second)
-                .get()
-                .minRowsRequested())
-        .isEqualTo(100L);
   }
 
   @ParameterizedTest
