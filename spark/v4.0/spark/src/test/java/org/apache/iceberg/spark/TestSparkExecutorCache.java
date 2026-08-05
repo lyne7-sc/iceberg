@@ -276,7 +276,32 @@ public class TestSparkExecutorCache extends TestBaseWithCatalog {
     // all keys must be invalidated
     Cache<String, ?> state = fetchInternalCacheState();
     Set<String> liveKeys = state.asMap().keySet();
-    assertThat(liveKeys).noneMatch(key -> key.startsWith(table1) || key.startsWith(table2));
+    assertThat(liveKeys)
+        .doesNotContain(
+            toInternalKey(table1, key1),
+            toInternalKey(table1, key2),
+            toInternalKey(table2, key1),
+            toInternalKey(table2, key2));
+  }
+
+  @TestTemplate
+  public void invalidatesOnlyExactGroup() {
+    SparkExecutorCache cache = SparkExecutorCache.getOrCreate();
+
+    String group = "table";
+    String similarGroup = "table_key";
+    String key = "key";
+    long valueSize = 100L;
+
+    cache.getOrLoad(group, key, () -> "value", valueSize);
+    cache.getOrLoad(similarGroup, key, () -> "similar-value", valueSize);
+
+    cache.invalidate(group);
+
+    Cache<String, ?> state = fetchInternalCacheState();
+    Set<String> liveKeys = state.asMap().keySet();
+    assertThat(liveKeys).doesNotContain(toInternalKey(group, key));
+    assertThat(liveKeys).contains(toInternalKey(similarGroup, key));
   }
 
   @TestTemplate
@@ -614,7 +639,7 @@ public class TestSparkExecutorCache extends TestBaseWithCatalog {
   }
 
   private static String toInternalKey(String group, String key) {
-    return group + "_" + key;
+    return group.length() + "_" + group + "_" + key;
   }
 
   public static class CustomFileIO implements FileIO {

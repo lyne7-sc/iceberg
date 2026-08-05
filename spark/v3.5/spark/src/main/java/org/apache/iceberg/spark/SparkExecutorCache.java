@@ -110,7 +110,7 @@ public class SparkExecutorCache {
       return valueSupplier.get();
     }
 
-    String internalKey = group + "_" + key;
+    String internalKey = group.length() + "_" + group + "_" + key;
     CacheValue value = state().get(internalKey, loadFunc(valueSupplier, valueSize));
     Preconditions.checkNotNull(value, "Loaded value must not be null");
     return value.get();
@@ -141,8 +141,9 @@ public class SparkExecutorCache {
   }
 
   private List<String> findInternalKeys(String group) {
+    String groupPrefix = group.length() + "_" + group + "_";
     return state.asMap().keySet().stream()
-        .filter(internalKey -> internalKey.startsWith(group))
+        .filter(internalKey -> internalKey.startsWith(groupPrefix))
         .collect(Collectors.toList());
   }
 
